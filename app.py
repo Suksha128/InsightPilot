@@ -20,6 +20,10 @@ from core import (
     delete_insight,
     generate_insights_and_followups,
 )
+from setup_telemetry import create_telemetry_db
+
+# Ensure telemetry DB exists
+create_telemetry_db()
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
