@@ -24,7 +24,7 @@ from core import (
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     layout="wide",
-    page_title="InsightPilot",
+    page_title="InsightPilotX",
     page_icon="📊",
 )
 
@@ -373,6 +373,23 @@ div[data-testid="column"] .stButton > button:hover {{
     overflow: hidden !important;
 }}
 
+/* ── File Uploader ── */
+[data-testid="stFileUploader"] > section,
+[data-testid="stFileUploadDropzone"] {{
+    background-color: {SURFACE} !important;
+    color: {TEXT} !important;
+}}
+[data-testid="stFileUploader"] div,
+[data-testid="stFileUploader"] span,
+[data-testid="stFileUploader"] small {{
+    color: {TEXT2} !important;
+}}
+[data-testid="stFileUploader"] button {{
+    background-color: {SURFACE2} !important;
+    color: {TEXT} !important;
+    border-color: {BORDER2} !important;
+}}
+
 /* ── Chat input ── */
 [data-testid="stChatInputTextArea"] {{
     background: {SURFACE} !important;
@@ -464,7 +481,7 @@ hr {{ border-color: {BORDER} !important; }}
 with st.sidebar:
     st.markdown(f"""
     <div class="sb-brand">
-        <div class="sb-brand-name">InsightPilot</div>
+        <div class="sb-brand-name">InsightPilotX</div>
         <div class="sb-brand-tag">Business Intelligence Copilot</div>
     </div>""", unsafe_allow_html=True)
 
@@ -523,7 +540,6 @@ st.markdown(f"""
         <div>
             <span class="navbar-name">InsightPilot</span>
         </div>
-        <span class="navbar-version">Beta</span>
     </div>
     <div class="navbar-right">
         <div class="nav-stat"><span>{n_tbls}</span> tables</div>
