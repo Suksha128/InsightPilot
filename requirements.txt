@@ -1,0 +1,6 @@
+vanna
+streamlit
+pandas
+plotly
+google-genai
+vanna
