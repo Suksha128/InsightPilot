@@ -6,3 +6,4 @@ groq
 google-genai
 duckdb
 chromadb
+protobuf<=3.20.3
