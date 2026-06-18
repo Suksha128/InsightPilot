@@ -5,3 +5,4 @@ plotly
 groq
 google-genai
 duckdb
+chromadb
