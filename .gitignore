@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Demo / test data (local only, never commit)
+demo_data/
+generate_demo_data.py
+
+# Environment
+venv/
+venv_clv/
+.env
+.env.*
+
+# Databases (user data — never commit)
+business_data.db
+telemetry.db
+*.duckdb
+
+# ChromaDB vector store (regenerated on first run)
+chroma.sqlite3
+e2f4322b-c7f8-48d7-84c1-906dffa8f7fb/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

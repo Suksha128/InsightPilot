@@ -3,26 +3,36 @@ import json
 import re
 import time
 
+import duckdb
 import pandas as pd
-from google import genai
+from groq import Groq
 from vanna.legacy.chromadb import ChromaDB_VectorStore
+from data_manager import DUCK_PATH, get_ddl_statements
 
-MODEL = "gemini-2.0-flash"
+MODEL = "llama-3.3-70b-versatile"   # Groq's current best model for SQL
 
 
 # ---------------------------------------------------------------------------
-# Custom Gemini LLM wrapper (replaces broken vanna.legacy.google)
+# Custom Groq LLM wrapper for Vanna
 # ---------------------------------------------------------------------------
 
-class CustomGeminiChat:
+class CustomGroqChat:
     def __init__(self, config=None):
         config = config or {}
-        self.api_key = config.get("api_key")
+        self.api_key   = config.get("api_key")
         self.model_name = config.get("model", MODEL)
-        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
+        self.client    = Groq(api_key=self.api_key) if self.api_key else None
 
     def system_message(self, message: str) -> dict:
-        return {"role": "system", "content": message}
+        # Enforce strict DuckDB dialect and GROUP BY rules
+        duckdb_rules = (
+            "\n\nCRITICAL DUCKDB SQL RULES:\n"
+            "1. You are generating SQL for DuckDB.\n"
+            "2. If you use GROUP BY, EVERY non-aggregated column in the SELECT list MUST appear in the GROUP BY list.\n"
+            "3. Do NOT select unaggregated columns (e.g. table.deal_value) if you are not grouping by them. Use ANY_VALUE(col) or SUM(col) instead.\n"
+            "4. Always use proper Postgres/DuckDB syntax.\n"
+        )
+        return {"role": "system", "content": message + duckdb_rules}
 
     def user_message(self, message: str) -> dict:
         return {"role": "user", "content": message}
@@ -32,30 +42,35 @@ class CustomGeminiChat:
 
     def submit_prompt(self, prompt, **kwargs) -> str:
         if not self.client:
-            return "Error: Gemini API key is missing."
+            return "Error: Groq API key is missing."
 
+        # Normalise prompt into a messages list
         if isinstance(prompt, str):
-            contents = prompt
+            messages = [{"role": "user", "content": prompt}]
         else:
-            # Flatten chat-style list into a single string
-            contents = "\n".join(
-                f"{msg['role'].upper()}: {msg['content']}" for msg in prompt
-            )
+            # Vanna passes a list of role dicts; map 'system' role
+            messages = []
+            for msg in prompt:
+                role = msg.get("role", "user")
+                if role not in ("system", "user", "assistant"):
+                    role = "user"
+                messages.append({"role": role, "content": msg["content"]})
 
         for attempt in range(3):
             try:
-                response = self.client.models.generate_content(
+                response = self.client.chat.completions.create(
                     model=self.model_name,
-                    contents=contents,
+                    messages=messages,
+                    temperature=0,
+                    max_tokens=2048,
                 )
-                return response.text
+                return response.choices[0].message.content
             except Exception as e:
-                if "429" in str(e):
+                if "429" in str(e) or "rate_limit" in str(e).lower():
                     if attempt < 2:
-                        time.sleep(15)   # silent retry
+                        time.sleep(15)
                         continue
-                    # Exhausted retries — return safe fallback SQL
-                    return "SELECT 'API rate limit reached. Please wait a moment.' AS message;"
+                    return "SELECT 'Rate limit reached. Please wait a moment.' AS message;"
                 return str(e)
         return ""
 
@@ -64,44 +79,46 @@ class CustomGeminiChat:
 # Vanna subclass
 # ---------------------------------------------------------------------------
 
-class MyVanna(CustomGeminiChat, ChromaDB_VectorStore):
+class MyVanna(CustomGroqChat, ChromaDB_VectorStore):
     def __init__(self, config=None):
         ChromaDB_VectorStore.__init__(self, config=config)
-        CustomGeminiChat.__init__(self, config=config)
+        CustomGroqChat.__init__(self, config=config)
 
 
 # ---------------------------------------------------------------------------
-# Factory — returns a trained, read-only Vanna instance
+# Factory
 # ---------------------------------------------------------------------------
 
 def get_vanna_instance(api_key: str) -> MyVanna:
     vn = MyVanna(config={"api_key": api_key, "model": MODEL})
 
-    # Train on schema once (skipped if training data already exists)
+    # Train on DuckDB schema (always refresh so uploads are reflected)
     try:
-        if len(vn.get_training_data()) == 0:
-            conn_train = sqlite3.connect("business_data.db")
-            ddl_rows = pd.read_sql_query(
-                "SELECT sql FROM sqlite_master "
-                "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'",
-                conn_train,
-            )
-            for ddl in ddl_rows["sql"]:
-                if ddl:
-                    vn.train(ddl=ddl)
-            conn_train.close()
+        old = vn.get_training_data()
+        if old is not None and len(old) > 0:
+            for tid in old["id"].tolist():
+                try:
+                    vn.remove_training_data(id=tid)
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    # Enforce read-only execution
-    def run_sql_readonly(sql: str) -> pd.DataFrame:
-        conn = sqlite3.connect("file:business_data.db?mode=ro", uri=True)
+    for ddl in get_ddl_statements():
         try:
-            return pd.read_sql_query(sql, conn)
-        finally:
-            conn.close()
+            vn.train(ddl=ddl)
+        except Exception:
+            pass
 
-    vn.run_sql = run_sql_readonly
+    # Read-only DuckDB runner
+    def run_sql_duckdb(sql: str) -> pd.DataFrame:
+        con = duckdb.connect(DUCK_PATH, read_only=True)
+        try:
+            return con.execute(sql).df()
+        finally:
+            con.close()
+
+    vn.run_sql = run_sql_duckdb
     return vn
 
 
@@ -109,19 +126,19 @@ def get_vanna_instance(api_key: str) -> MyVanna:
 # Guardrails
 # ---------------------------------------------------------------------------
 
-DANGEROUS = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE", "GRANT", "REVOKE"]
-AMBIGUOUS_TERMS = ["best", "top", "worst"]
-CLARIFIERS = ["revenue", "sales", "margin", "orders", "frequency", "profit", "volume", "lifetime value"]
+DANGEROUS    = ["DROP","DELETE","UPDATE","INSERT","ALTER","TRUNCATE","GRANT","REVOKE"]
+AMBIGUOUS    = ["best","top","worst"]
+CLARIFIERS   = ["revenue","sales","margin","orders","frequency","profit","volume","lifetime value"]
 
 
 def detect_ambiguity(prompt: str):
     lower = prompt.lower()
-    for term in AMBIGUOUS_TERMS:
+    for term in AMBIGUOUS:
         if re.search(rf"\b{term}\b", lower):
             if not any(c in lower for c in CLARIFIERS):
                 return True, (
                     f"I see you asked about **'{term}'**. "
-                    f"Could you clarify the metric? (e.g. by revenue, frequency, or margin?)"
+                    "Could you clarify the metric? (e.g. by revenue, frequency, or margin?)"
                 )
     return False, ""
 
@@ -130,8 +147,7 @@ def validate_sql(sql: str):
     upper = sql.upper()
     for word in DANGEROUS:
         if re.search(rf"\b{word}\b", upper):
-            return False, f"🚫 Guardrail: keyword **{word}** is not allowed. Only SELECT queries are permitted."
-    # Append LIMIT if missing (strip trailing semicolon first)
+            return False, f"Keyword **{word}** is not permitted. Only SELECT queries are allowed."
     if "LIMIT" not in upper:
         sql = sql.strip().rstrip(";") + "\nLIMIT 1000"
     return True, sql
@@ -144,9 +160,9 @@ def validate_sql(sql: str):
 def check_cache(prompt: str):
     try:
         conn = sqlite3.connect("telemetry.db")
-        cur = conn.cursor()
+        cur  = conn.cursor()
         cur.execute("SELECT generated_sql FROM prompt_cache WHERE prompt = ?", (prompt,))
-        row = cur.fetchone()
+        row  = cur.fetchone()
         conn.close()
         return row[0] if row else None
     except Exception:
@@ -167,22 +183,22 @@ def save_cache(prompt: str, sql: str):
 
 
 # ---------------------------------------------------------------------------
-# Telemetry / logging
+# Telemetry
 # ---------------------------------------------------------------------------
 
-def log_query(prompt: str, sql: str, latency: float, status: str, error_msg: str = "") -> int:
+def log_query(prompt, sql, latency, status, error_msg="") -> int:
     try:
         conn = sqlite3.connect("telemetry.db")
-        cur = conn.cursor()
+        cur  = conn.cursor()
         cur.execute(
             "INSERT INTO logs (prompt, generated_sql, latency, status, error_message) "
             "VALUES (?, ?, ?, ?, ?)",
             (prompt, sql, latency, status, error_msg),
         )
-        log_id = cur.lastrowid
+        lid = cur.lastrowid
         conn.commit()
         conn.close()
-        return log_id
+        return lid
     except Exception:
         return -1
 
@@ -204,7 +220,7 @@ def log_feedback(log_id: int, feedback_type: str):
 # Saved insights
 # ---------------------------------------------------------------------------
 
-def save_insight(title: str, prompt: str, sql: str, summary: str):
+def save_insight(title, prompt, sql, summary):
     try:
         conn = sqlite3.connect("telemetry.db")
         conn.execute(
@@ -221,74 +237,83 @@ def save_insight(title: str, prompt: str, sql: str, summary: str):
 def get_saved_insights() -> pd.DataFrame:
     try:
         conn = sqlite3.connect("telemetry.db")
-        df = pd.read_sql_query("SELECT * FROM saved_insights ORDER BY timestamp DESC", conn)
+        df   = pd.read_sql_query("SELECT * FROM saved_insights ORDER BY timestamp DESC", conn)
         conn.close()
         return df
     except Exception:
         return pd.DataFrame()
 
+def delete_insight(insight_id: int):
+    try:
+        conn = sqlite3.connect("telemetry.db")
+        cur  = conn.cursor()
+        cur.execute("DELETE FROM saved_insights WHERE id = ?", (insight_id,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
-# Combined AI: business summary + follow-up questions (single API call)
+# Combined AI insight + follow-ups  (single Groq call)
 # ---------------------------------------------------------------------------
 
 def generate_insights_and_followups(prompt: str, df: pd.DataFrame, api_key: str) -> dict:
     if df is None or df.empty:
         return {
-            "summary": "No data was returned for this query.",
+            "summary":   "No data was returned for this query.",
             "followups": ["Try another category", "Show monthly trend", "Check customer segments"],
         }
 
-    client = genai.Client(api_key=api_key)
+    client       = Groq(api_key=api_key)
     markdown_data = df.head(50).to_markdown()
 
-    prompt_text = f"""
+    system_msg = (
+        "You are a concise business analyst. "
+        "Always respond with valid JSON only — no markdown fences, no extra text."
+    )
+    user_msg = f"""
 The user asked: '{prompt}'
 Data (first 50 rows):
 {markdown_data}
 
-Tasks:
-1. Write a short, actionable business summary (3 sentences max).
-2. Suggest exactly 3 short follow-up questions to dig deeper.
-
-Return ONLY valid JSON in this exact shape:
+Return ONLY this JSON:
 {{
-  "summary": "...",
-  "followups": ["...", "...", "..."]
+  "summary": "2-3 sentence actionable business insight",
+  "followups": ["follow-up 1", "follow-up 2", "follow-up 3"]
 }}
 """
 
     for attempt in range(3):
         try:
-            response = client.models.generate_content(
+            response = client.chat.completions.create(
                 model=MODEL,
-                contents=prompt_text,
-                config={"response_mime_type": "application/json"},
+                messages=[
+                    {"role": "system",  "content": system_msg},
+                    {"role": "user",    "content": user_msg},
+                ],
+                temperature=0,
+                max_tokens=512,
+                response_format={"type": "json_object"},
             )
-            text = response.text.strip()
-            # Strip accidental markdown fences
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
+            text   = response.choices[0].message.content.strip()
             result = json.loads(text)
             return result
         except Exception as e:
-            if "429" in str(e):
+            if "429" in str(e) or "rate_limit" in str(e).lower():
                 if attempt < 2:
                     time.sleep(15)
                     continue
                 return {
-                    "summary": "⏳ Rate limit reached — please wait ~1 minute and ask again.",
+                    "summary":   "⏳ Rate limit reached — please wait a moment and ask again.",
                     "followups": ["Break down by category", "Show monthly trend", "What are the top 5?"],
                 }
             return {
-                "summary": f"Insight generation failed: {e}",
+                "summary":   f"Insight generation failed: {e}",
                 "followups": ["Break down by category", "Show monthly trend", "What are the top 5?"],
             }
 
     return {
-        "summary": "Could not generate insight after retries.",
+        "summary":   "Could not generate insight after retries.",
         "followups": ["Break down by category", "Show monthly trend", "What are the top 5?"],
     }
