@@ -1037,6 +1037,8 @@ if prompt:
 
         lat = time.time() - t0
         lid = log_query(prompt, sql, lat, status, emsg)
+        if lid == -1:
+            import uuid; lid = str(uuid.uuid4())
 
         if status == "Failure":
             st.error(f"Query failed: {emsg}"); st.code(sql, language="sql"); st.stop()
