@@ -9,7 +9,7 @@ from groq import Groq
 from vanna.legacy.chromadb import ChromaDB_VectorStore
 from data_manager import DUCK_PATH, get_ddl_statements
 
-MODEL = "llama3-8b-8192"   # Faster, lighter model to avoid Groq free-tier rate limits
+MODEL = "llama-3.3-70b-versatile"   # Groq's current best model for SQL
 
 
 # ---------------------------------------------------------------------------
