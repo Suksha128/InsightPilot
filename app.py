@@ -19,6 +19,7 @@ from core import (
     get_saved_insights,
     delete_insight,
     generate_insights_and_followups,
+    MODEL,
 )
 from setup_telemetry import create_telemetry_db
 
@@ -751,11 +752,11 @@ if not ok:
 
 # ─── Init Vanna ───────────────────────────────────────────────────────────────
 @st.cache_resource
-def init_vanna(key, _mtime):
+def init_vanna(key, _mtime, model_name):
     return get_vanna_instance(key)
 
 duck_mtime = os.path.getmtime(DUCK_PATH) if os.path.exists(DUCK_PATH) else 0
-vn = init_vanna(api_key, duck_mtime)
+vn = init_vanna(api_key, duck_mtime, MODEL)
 
 # ─── Dynamic chips from real table names ─────────────────────────────────────
 schema     = get_schema()
