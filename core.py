@@ -2,6 +2,7 @@ import sqlite3
 import json
 import re
 import time
+import ast
 
 import duckdb
 import pandas as pd
@@ -151,6 +152,38 @@ def validate_sql(sql: str):
     if "LIMIT" not in upper:
         sql = sql.strip().rstrip(";") + "\nLIMIT 1000"
     return True, sql
+
+
+def validate_python_code(code: str) -> tuple[bool, str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False, "SyntaxError in generated code."
+        
+    allowed_modules = ["pandas", "plotly", "numpy", "datetime"]
+    forbidden_calls = ["eval", "exec", "open", "__import__", "globals", "locals", "getattr", "setattr", "delattr"]
+    forbidden_modules = ["os", "sys", "subprocess", "shutil", "socket", "requests"]
+    
+    for node in ast.walk(tree):
+        # Prevent dangerous imports
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split('.')[0] not in allowed_modules:
+                    return False, f"Forbidden import: {alias.name}"
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split('.')[0] not in allowed_modules:
+                return False, f"Forbidden import: {node.module}"
+                
+        # Prevent dangerous function calls and module access
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id in forbidden_calls:
+                    return False, f"Forbidden function call: {node.func.id}"
+            elif isinstance(node.func, ast.Attribute):
+                if isinstance(node.func.value, ast.Name) and node.func.value.id in forbidden_modules:
+                    return False, f"Forbidden module access: {node.func.value.id}"
+                    
+    return True, ""
 
 
 # ---------------------------------------------------------------------------

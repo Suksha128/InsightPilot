@@ -19,6 +19,7 @@ from core import (
     get_saved_insights,
     delete_insight,
     generate_insights_and_followups,
+    validate_python_code,
     MODEL,
 )
 from setup_telemetry import create_telemetry_db
@@ -1064,11 +1065,15 @@ if prompt:
         try:
             with st.spinner("Building chart…"):
                 code = vn.generate_plotly_code(question=prompt, sql=sql, df=df)
-                # Vanna's generated code might have fig.show(renderer='browser') or similar. 
                 # Use regex to strip any form of fig.show(...) robustly.
                 import re
                 code = re.sub(r"fig\.show\s*\([^)]*\)", "", code)
-                fig  = vn.get_plotly_figure(plotly_code=code, df=df)
+                
+                is_safe, reason = validate_python_code(code)
+                if not is_safe:
+                    st.error(f"⚠️ Security block: The AI generated an unsafe chart script ({reason}).")
+                else:
+                    fig  = vn.get_plotly_figure(plotly_code=code, df=df)
                 if fig:
                     fig.update_layout(
                         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=SURFACE,
